@@ -8,7 +8,7 @@ const PAGE_SIZE = 20;
 const IMG = "https://image.tmdb.org/t/p/w500";
 
 // ID dei provider TMDB (verifica con: /watch/providers/movie?watch_region=IT)
-const PLATFORMS = {
+  const PLATFORMS = {
   const PLATFORMS = {
   netflix: { name: "Netflix", id: 8 },
   prime: { name: "Prime Video", id: 119 },
