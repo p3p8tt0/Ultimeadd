@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Novità Streaming Italia</title>
+<style>
+  :root { --bg:#f6f6f8; --card:#fff; --text:#1a1a1f; --muted:#666; --accent:#7b5bf2; --border:#ddd; --ok:#1a8a4a; --err:#c62828; color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#121216; --card:#1c1c22; --text:#f0f0f4; --muted:#9a9aa5; --border:#33333c; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, sans-serif; background:var(--bg); color:var(--text); padding:16px; }
+  .card { max-width:480px; margin:0 auto; background:var(--card); border-radius:16px; padding:20px; }
+  h1 { font-size:1.3rem; margin:0 0 4px; }
+  p.sub { color:var(--muted); margin:0 0 18px; font-size:.9rem; }
+  label.title { display:block; font-weight:600; margin:16px 0 6px; font-size:.9rem; }
+  input[type=text], input[type=number] { width:100%; padding:12px; border:1px solid var(--border); border-radius:10px; background:transparent; color:var(--text); font-size:1rem; }
+  .plats { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .plats label { display:flex; align-items:center; gap:8px; padding:10px; border:1px solid var(--border); border-radius:10px; font-size:.9rem; }
+  button, a.btn { display:block; width:100%; text-align:center; text-decoration:none; padding:14px; border:0; border-radius:10px; font-size:1rem; font-weight:600; cursor:pointer; margin-top:16px; }
+  .primary { background:var(--accent); color:#fff; }
+  .secondary { background:transparent; color:var(--text); border:1px solid var(--border); }
+  #msg { margin-top:10px; font-size:.9rem; min-height:1.2em; }
+  #result { display:none; margin-top:8px; }
+  small.hint { color:var(--muted); d
