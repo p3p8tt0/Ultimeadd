@@ -97,7 +97,7 @@ async function getCatalog(cfg, platformKey, type, skip) {
   const params = {
     watch_region: REGION,
     with_watch_providers: String(platform.id),
-    with_watch_monetization_types: "flatrate",
+    with_watch_monetization_types: "flatrate|free|ads",
     page: String(page),
   };
   if (kind === "movie") {
