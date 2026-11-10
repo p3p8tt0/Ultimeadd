@@ -91,12 +91,19 @@ async function getCatalog(cfg, platformKey, type, skip) {
     watch_region: REGION,
     with_watch_providers: String(platform.id),
     with_watch_monetization_types: "flatrate",
-    sort_by: kind === "movie" ? "primary_release_date.desc" : "first_air_date.desc",
     page: String(page),
   };
-  const field = kind === "movie" ? "primary_release_date" : "first_air_date";
-  params[`${field}.gte`] = fmt(from);
-  params[`${field}.lte`] = fmt(to);
+  if (kind === "movie") {
+    params.region = REGION;
+    params.with_release_type = "3|4|6"; // cinema, digitale, TV
+    params["release_date.gte"] = fmt(from);
+    params["release_date.lte"] = fmt(to);
+    params.sort_by = "primary_release_date.desc";
+  } else {
+    params["first_air_date.gte"] = fmt(from);
+    params["first_air_date.lte"] = fmt(to);
+    params.sort_by = "first_air_date.desc";
+  }
 
   const data = await tmdb(cfg.key, `/discover/${kind}`, params);
   const metas = (
