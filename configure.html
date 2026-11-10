@@ -21,4 +21,75 @@
   .secondary { background:transparent; color:var(--text); border:1px solid var(--border); }
   #msg { margin-top:10px; font-size:.9rem; min-height:1.2em; }
   #result { display:none; margin-top:8px; }
-  small.hint { color:var(--muted); d
+  small.hint { color:var(--muted); display:block; margin-top:6px; font-size:.8rem; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Novità Streaming Italia</h1>
+  <p class="sub">Le uscite recenti delle piattaforme, direttamente in Stremio.</p>
+
+  <label class="title" for="key">Chiave API TMDB</label>
+  <input type="text" id="key" placeholder="Incolla qui la tua chiave" autocomplete="off" autocapitalize="off" spellcheck="false">
+  <small class="hint">Gratis su themoviedb.org → Impostazioni → API.</small>
+
+  <label class="title" for="days">Giorni da mostrare</label>
+  <input type="number" id="days" value="30" min="1" max="90">
+
+  <label class="title">Piattaforme</label>
+  <div class="plats" id="plats"></div>
+
+  <button class="primary" id="gen">Genera link</button>
+  <div id="msg"></div>
+
+  <div id="result">
+    <a class="btn primary" id="install" href="#">Installa in Stremio</a>
+    <button class="secondary" id="copy">Copia link</button>
+    <small class="hint">Il link contiene la tua chiave: non condividerlo.</small>
+  </div>
+</div>
+
+<script>
+  const PLATS = { netflix:"Netflix", prime:"Prime Video", hbo:"HBO Max", disney:"Disney+", apple:"Apple TV+", paramount:"Paramount+" };
+  const platsEl = document.getElementById("plats");
+  for (const [id, name] of Object.entries(PLATS)) {
+    platsEl.insertAdjacentHTML("beforeend", `<label><input type="checkbox" value="${id}" checked> ${name}</label>`);
+  }
+
+  const msg = document.getElementById("msg");
+  const result = document.getElementById("result");
+  let httpsLink = "";
+
+  document.getElementById("gen").addEventListener("click", async () => {
+    result.style.display = "none";
+    const key = document.getElementById("key").value.trim();
+    const days = parseInt(document.getElementById("days").value, 10) || 30;
+    const platforms = [...platsEl.querySelectorAll("input:checked")].map((i) => i.value);
+    if (!key) { msg.style.color = "var(--err)"; msg.textContent = "Inserisci la chiave TMDB."; return; }
+    if (!platforms.length) { msg.style.color = "var(--err)"; msg.textContent = "Scegli almeno una piattaforma."; return; }
+
+    msg.style.color = "var(--muted)"; msg.textContent = "Verifico la chiave…";
+    try {
+      const r = await fetch("/api/check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key }) });
+      const j = await r.json();
+      if (!j.ok) { msg.style.color = "var(--err)"; msg.textContent = "Chiave TMDB non valida."; return; }
+    } catch {
+      msg.style.color = "var(--err)"; msg.textContent = "Impossibile verificare la chiave."; return;
+    }
+
+    const json = JSON.stringify({ key, days, platforms });
+    const b64 = btoa(String.fromCharCode(...new TextEncoder().encode(json)))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    httpsLink = `${location.origin}/${b64}/manifest.json`;
+    document.getElementById("install").href = `stremio://${location.host}/${b64}/manifest.json`;
+    msg.style.color = "var(--ok)"; msg.textContent = "Chiave valida. Link pronto!";
+    result.style.display = "block";
+  });
+
+  document.getElementById("copy").addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(httpsLink); msg.textContent = "Link copiato."; }
+    catch { msg.textContent = httpsLink; }
+  });
+</script>
+</body>
+</html>
