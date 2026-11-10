@@ -50,7 +50,7 @@
 </div>
 
 <script>
-  const PLATS = { netflix:"Netflix", prime:"Prime Video", hbo:"HBO Max", disney:"Disney+", apple:"Apple TV+", paramount:"Paramount+" };
+  const PLATS = { netflix:"Netflix", prime:"Prime Video", hbo:"HBO Max", disney:"Disney+", apple:"Apple TV+", paramount:"Paramount+", discovery:"Discovery+", now:"NOW", raiplay:"RaiPlay", infinity:"Mediaset Infinity", timvision:"TIMvision", crunchyroll:"Crunchyroll" };
   const platsEl = document.getElementById("plats");
   for (const [id, name] of Object.entries(PLATS)) {
     platsEl.insertAdjacentHTML("beforeend", `<label><input type="checkbox" value="${id}" checked> ${name}</label>`);
