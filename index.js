@@ -58,6 +58,7 @@ async function tmdbDetails(cfg, kind, tmdbId) {
       overview: d.overview || "",
       date: d.release_date || d.first_air_date || "",
       pop: d.popularity || 0,
+      seasons: (d.seasons || []).map((x) => x.air_date).filter(Boolean),
       year: (d.release_date || d.first_air_date || "").slice(0, 4),
       rating: d.vote_average ? d.vote_average.toFixed(1) : undefined,
     };
@@ -82,6 +83,7 @@ async function toMeta(cfg, type, kind, tmdbId, knownImdb) {
     imdbRating: d.rating,
     _pop: d.pop,
     _date: d.date,
+    _seasons: d.seasons,
   };
 }
 
@@ -163,21 +165,23 @@ async function tmdbCandidates(cfg, platformKey, type) {
       "release_date.gte": from,
       "release_date.lte": to,
       "vote_count.gte": "3",
+      _rel: true,
     });
   } else {
     // 1) serie nuove (prima puntata nel periodo)
-    queries.push({ ...base, "first_air_date.gte": from, "first_air_date.lte": to });
+    queries.push({ ...base, "first_air_date.gte": from, "first_air_date.lte": to, _rel: true });
     // 2) nuove stagioni / puntate andate in onda nel periodo (es. reality e show)
     queries.push({ ...base, "air_date.gte": from, "air_date.lte": to });
   }
   const results = await Promise.all(
-    queries.map((q) =>
-      Promise.all(
+    queries.map((q) => {
+      const { _rel, ...params } = q;
+      return Promise.all(
         [1, 2, 3].map((p) =>
-          tmdb(cfg.key, `/discover/${kind}`, { ...q, page: String(p) }).catch(() => ({ results: [] }))
+          tmdb(cfg.key, `/discover/${kind}`, { ...params, page: String(p) }).catch(() => ({ results: [] }))
         )
-      ).then((pages) => pages.flatMap((d) => d.results))
-    )
+      ).then((pages) => pages.flatMap((d) => d.results.map((r) => ({ ...r, _rel: !!_rel }))));
+    })
   );
   // serie nuove prima, poi nuove stagioni; senza doppioni
   const seen = new Set();
@@ -185,20 +189,28 @@ async function tmdbCandidates(cfg, platformKey, type) {
   for (const r of results.flat()) {
     if (!r.poster_path || seen.has(r.id)) continue;
     seen.add(r.id);
-    out.push({ tmdbId: String(r.id) });
+    out.push({ tmdbId: String(r.id), rel: r._rel });
   }
   return out;
 }
 
-// Unisce le due fonti senza doppioni
+// Unisce le due fonti senza doppioni (conserva il flag "uscito nel periodo")
 function mergeLists(added, released) {
-  const seen = new Set();
-  return [...added, ...released].filter((x) => !seen.has(x.tmdbId) && seen.add(x.tmdbId));
+  const map = new Map();
+  for (const x of [...released, ...added]) {
+    const prev = map.get(x.tmdbId);
+    map.set(x.tmdbId, { ...prev, ...x, rel: !!(prev?.rel || x.rel) });
+  }
+  return [...map.values()];
 }
 
-// Catalogo completo ordinato: prima i più popolari, a parità i più recenti
+// Catalogo ordinato: prima le uscite del periodo (le più popolari in cima),
+// poi i titoli solo aggiunti alla piattaforma (anch'essi per popolarità)
 async function buildCatalog(cfg, platformKey, type) {
   const kind = type === "movie" ? "movie" : "tv";
+  const from = fmt(new Date(Date.now() - cfg.days * 86400000));
+  const to = fmt(new Date());
+  const inWindow = (d) => !!d && d >= from && d <= to;
   const [jw, tm] = await Promise.allSettled([
     jwCandidates(cfg, platformKey, type),
     tmdbCandidates(cfg, platformKey, type),
@@ -206,11 +218,26 @@ async function buildCatalog(cfg, platformKey, type) {
   if (jw.status === "rejected") console.warn(`[${platformKey}/${type}] JustWatch: ${jw.reason.message}`);
   if (tm.status === "rejected") console.warn(`[${platformKey}/${type}] TMDB: ${tm.reason.message}`);
   const list = mergeLists(jw.value || [], tm.value || []);
-  const metas = (await Promise.all(list.map((it) => toMeta(cfg, type, kind, it.tmdbId, it.imdbId)))).filter(Boolean);
+  const metas = (
+    await Promise.all(
+      list.map(async (it) => {
+        const m = await toMeta(cfg, type, kind, it.tmdbId, it.imdbId);
+        if (!m) return null;
+        // recente = uscito nel periodo, oppure (serie) nuova stagione partita nel periodo
+        m._recent = it.rel || inWindow(m._date) || (kind === "tv" && (m._seasons || []).some(inWindow));
+        return m;
+      })
+    )
+  ).filter(Boolean);
   const seenIds = new Set();
   return metas
     .filter((m) => !seenIds.has(m.id) && seenIds.add(m.id))
-    .sort((a, b) => b._pop - a._pop || (b._date || "").localeCompare(a._date || ""));
+    .sort(
+      (a, b) =>
+        Number(b._recent) - Number(a._recent) ||
+        b._pop - a._pop ||
+        (b._date || "").localeCompare(a._date || "")
+    );
 }
 
 async function getCatalog(cfg, platformKey, type, skip) {
@@ -220,7 +247,7 @@ async function getCatalog(cfg, platformKey, type, skip) {
     all = await buildCatalog(cfg, platformKey, type);
     if (all.length) setC(listKey, all);
   }
-  return all.slice(skip, skip + PAGE_SIZE).map(({ _pop, _date, ...meta }) => meta);
+  return all.slice(skip, skip + PAGE_SIZE).map(({ _pop, _date, _seasons, _recent, ...meta }) => meta);
 }
 
 // ---------- Config / manifest ----------
@@ -247,7 +274,7 @@ function buildManifest(cfg) {
   }
   return {
     id: "community.novita.streaming.it",
-    version: "3.3.0",
+    version: "3.4.0",
     name: "Novità Streaming Italia",
     description: "Le ultime novità arrivate su Netflix, HBO Max, Prime Video e altre piattaforme in Italia.",
     resources: ["catalog"],
