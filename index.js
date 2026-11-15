@@ -138,6 +138,50 @@ async function jwNewTitles(platform, type, days, page) {
   return items;
 }
 
+// Classifica di popolarità in Italia per la piattaforma (JustWatch, sortBy POPULAR)
+const JW_POPULAR_QUERY = `
+query GetPopular($country: Country!, $language: Language!, $filter: TitleFilter, $first: Int!) {
+  popularTitles(country: $country, filter: $filter, first: $first, sortBy: POPULAR) {
+    edges {
+      node {
+        id
+        content(country: $country, language: $language) {
+          externalIds { tmdbId }
+        }
+      }
+    }
+  }
+}`;
+
+async function jwPopularRanks(platform, type) {
+  const k = `jwpop-${platform.jw}-${type}`;
+  const hit = getC(k);
+  if (hit) return hit;
+  const res = await fetch("https://apis.justwatch.com/graphql", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "User-Agent": "Mozilla/5.0" },
+    body: JSON.stringify({
+      query: JW_POPULAR_QUERY,
+      variables: {
+        country: REGION,
+        language: LANG,
+        first: 150,
+        filter: { packages: [platform.jw], objectTypes: [type === "movie" ? "MOVIE" : "SHOW"] },
+      },
+    }),
+  });
+  if (!res.ok) throw new Error(`JustWatch popular ${res.status}`);
+  const json = await res.json();
+  if (json.errors) throw new Error(`JustWatch popular: ${json.errors[0]?.message}`);
+  const ranks = new Map();
+  (json.data?.popularTitles?.edges || []).forEach((e, i) => {
+    const id = e.node?.content?.externalIds?.tmdbId;
+    if (id && !ranks.has(String(id))) ranks.set(String(id), i + 1);
+  });
+  setC(k, ranks);
+  return ranks;
+}
+
 // Candidati JustWatch: titoli arrivati di recente sulla piattaforma
 async function jwCandidates(cfg, platformKey, type) {
   const items = await jwNewTitles(PLATFORMS[platformKey], type, cfg.days, 0);
@@ -204,19 +248,22 @@ function mergeLists(added, released) {
   return [...map.values()];
 }
 
-// Catalogo ordinato: prima le uscite del periodo (le più popolari in cima),
+// Catalogo ordinato: prima le uscite del periodo (le più popolari in Italia in cima),
 // poi i titoli solo aggiunti alla piattaforma (anch'essi per popolarità)
 async function buildCatalog(cfg, platformKey, type) {
   const kind = type === "movie" ? "movie" : "tv";
   const from = fmt(new Date(Date.now() - cfg.days * 86400000));
   const to = fmt(new Date());
   const inWindow = (d) => !!d && d >= from && d <= to;
-  const [jw, tm] = await Promise.allSettled([
+  const [jw, tm, rk] = await Promise.allSettled([
     jwCandidates(cfg, platformKey, type),
     tmdbCandidates(cfg, platformKey, type),
+    jwPopularRanks(PLATFORMS[platformKey], type),
   ]);
   if (jw.status === "rejected") console.warn(`[${platformKey}/${type}] JustWatch: ${jw.reason.message}`);
   if (tm.status === "rejected") console.warn(`[${platformKey}/${type}] TMDB: ${tm.reason.message}`);
+  if (rk.status === "rejected") console.warn(`[${platformKey}/${type}] Popolarità IT non disponibile: ${rk.reason.message}`);
+  const ranks = rk.value || new Map();
   const list = mergeLists(jw.value || [], tm.value || []);
   const metas = (
     await Promise.all(
@@ -224,6 +271,7 @@ async function buildCatalog(cfg, platformKey, type) {
         const m = await toMeta(cfg, type, kind, it.tmdbId, it.imdbId);
         if (!m) return null;
         // recente = uscito nel periodo, oppure (serie) nuova stagione partita nel periodo
+        m._rank = ranks.get(String(it.tmdbId)) ?? Infinity;
         m._recent = it.rel || inWindow(m._date) || (kind === "tv" && (m._seasons || []).some(inWindow));
         return m;
       })
@@ -235,6 +283,7 @@ async function buildCatalog(cfg, platformKey, type) {
     .sort(
       (a, b) =>
         Number(b._recent) - Number(a._recent) ||
+        (a._rank === b._rank ? 0 : a._rank < b._rank ? -1 : 1) ||
         b._pop - a._pop ||
         (b._date || "").localeCompare(a._date || "")
     );
@@ -247,7 +296,7 @@ async function getCatalog(cfg, platformKey, type, skip) {
     all = await buildCatalog(cfg, platformKey, type);
     if (all.length) setC(listKey, all);
   }
-  return all.slice(skip, skip + PAGE_SIZE).map(({ _pop, _date, _seasons, _recent, ...meta }) => meta);
+  return all.slice(skip, skip + PAGE_SIZE).map(({ _pop, _date, _seasons, _recent, _rank, ...meta }) => meta);
 }
 
 // ---------- Config / manifest ----------
@@ -274,7 +323,7 @@ function buildManifest(cfg) {
   }
   return {
     id: "community.novita.streaming.it",
-    version: "3.4.0",
+    version: "3.5.0",
     name: "Novità Streaming Italia",
     description: "Le ultime novità arrivate su Netflix, HBO Max, Prime Video e altre piattaforme in Italia.",
     resources: ["catalog"],
