@@ -50,7 +50,7 @@ async function tmdbDetails(cfg, kind, tmdbId) {
   const hit = getC(k);
   if (hit !== undefined) return hit;
   try {
-    const d = await tmdb(cfg.key, `/${kind}/${tmdbId}`, { append_to_response: "external_ids" });
+    const d = await tmdb(cfg.key, `/${kind}/${tmdbId}`, { append_to_response: "external_ids,watch/providers" });
     const v = {
       imdb: d.external_ids?.imdb_id || null,
       name: d.title || d.name,
@@ -58,7 +58,12 @@ async function tmdbDetails(cfg, kind, tmdbId) {
       overview: d.overview || "",
       date: d.release_date || d.first_air_date || "",
       pop: d.popularity || 0,
-      seasons: (d.seasons || []).map((x) => x.air_date).filter(Boolean),
+      providers: (() => {
+        const it = d["watch/providers"]?.results?.[REGION] || {};
+        return [...(it.flatrate || []), ...(it.free || []), ...(it.ads || [])].map((p) => p.provider_id);
+      })(),
+      countries: [...(d.origin_country || []), ...(d.production_countries || []).map((c) => c.iso_3166_1)],
+      seasons: (d.seasons || []).filter((x) => x.season_number > 0).map((x) => x.air_date).filter(Boolean), // esclude gli speciali (stagione 0)
       year: (d.release_date || d.first_air_date || "").slice(0, 4),
       rating: d.vote_average ? d.vote_average.toFixed(1) : undefined,
     };
@@ -84,6 +89,8 @@ async function toMeta(cfg, type, kind, tmdbId, knownImdb) {
     _pop: d.pop,
     _date: d.date,
     _seasons: d.seasons,
+    _countries: d.countries,
+    _providers: d.providers,
   };
 }
 
@@ -200,6 +207,7 @@ async function tmdbCandidates(cfg, platformKey, type) {
     with_watch_monetization_types: "flatrate|free|ads",
     sort_by: "popularity.desc",
   };
+  if (cfg.onlyItalian) base.with_origin_country = "IT";
   const queries = [];
   if (kind === "movie") {
     queries.push({
@@ -280,8 +288,12 @@ async function buildCatalog(cfg, platformKey, type) {
   const seenIds = new Set();
   return metas
     .filter((m) => !seenIds.has(m.id) && seenIds.add(m.id))
+    // disponibile davvero in Italia su QUESTA piattaforma (dati TMDB/JustWatch per l'Italia)
+    .filter((m) => (m._providers || []).includes(PLATFORMS[platformKey].id))
     // finestra rigida: solo titoli usciti negli ultimi N giorni (salvo includeAdded)
     .filter((m) => cfg.includeAdded || m._recent)
+    // solo produzioni italiane (disattivabile con onlyItalian:false)
+    .filter((m) => !cfg.onlyItalian || (m._countries || []).includes("IT"))
     .sort(
       (a, b) =>
         Number(b._recent) - Number(a._recent) ||
@@ -292,13 +304,13 @@ async function buildCatalog(cfg, platformKey, type) {
 }
 
 async function getCatalog(cfg, platformKey, type, skip) {
-  const listKey = `sorted-${platformKey}-${type}-${cfg.days}-${cfg.includeAdded}`;
+  const listKey = `sorted-${platformKey}-${type}-${cfg.days}-${cfg.includeAdded}-${cfg.onlyItalian}`;
   let all = getC(listKey);
   if (!all) {
     all = await buildCatalog(cfg, platformKey, type);
     if (all.length) setC(listKey, all);
   }
-  return all.slice(skip, skip + PAGE_SIZE).map(({ _pop, _date, _seasons, _recent, _rank, ...meta }) => meta);
+  return all.slice(skip, skip + PAGE_SIZE).map(({ _pop, _date, _seasons, _recent, _rank, _countries, _providers, ...meta }) => meta);
 }
 
 // ---------- Config / manifest ----------
@@ -308,7 +320,7 @@ function parseConfig(raw) {
     if (!c.key || typeof c.key !== "string") return null;
     const days = Math.min(Math.max(parseInt(c.days, 10) || 30, 1), 90);
     const platforms = (Array.isArray(c.platforms) ? c.platforms : []).filter((p) => PLATFORMS[p]);
-    return { key: c.key, days, includeAdded: c.includeAdded === true, platforms: platforms.length ? platforms : Object.keys(PLATFORMS) };
+    return { key: c.key, days, includeAdded: c.includeAdded === true, onlyItalian: c.onlyItalian === true, platforms: platforms.length ? platforms : Object.keys(PLATFORMS) };
   } catch {
     return null;
   }
@@ -325,7 +337,7 @@ function buildManifest(cfg) {
   }
   return {
     id: "community.novita.streaming.it",
-    version: "3.6.0",
+    version: "3.8.0",
     name: "Novità Streaming Italia",
     description: "Le ultime novità arrivate su Netflix, HBO Max, Prime Video e altre piattaforme in Italia.",
     resources: ["catalog"],
