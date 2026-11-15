@@ -132,63 +132,75 @@ async function jwNewTitles(platform, type, days, page) {
   return items;
 }
 
-async function catalogFromJustWatch(cfg, platformKey, type, skip) {
-  const platform = PLATFORMS[platformKey];
-  const kind = type === "movie" ? "movie" : "tv";
-  const all = await jwNewTitles(platform, type, cfg.days, 0);
-  if (!all.length) throw new Error("JustWatch: nessun risultato");
-  const slice = all.slice(skip, skip + PAGE_SIZE);
-  const metas = await Promise.all(
-    slice.map((it) => (it.tmdbId ? toMeta(cfg, type, kind, it.tmdbId, it.imdbId) : null))
-  );
-  return metas.filter(Boolean);
+// Candidati JustWatch: titoli arrivati di recente sulla piattaforma
+async function jwCandidates(cfg, platformKey, type) {
+  const items = await jwNewTitles(PLATFORMS[platformKey], type, cfg.days, 0);
+  return items.filter((it) => it.tmdbId).map((it) => ({ tmdbId: String(it.tmdbId), imdbId: it.imdbId }));
 }
 
-// ---------- Fallback TMDB (filtri migliorati) ----------
-async function catalogFromTmdb(cfg, platformKey, type, skip) {
+// Candidati TMDB: titoli usciti nel periodo e disponibili sulla piattaforma
+async function tmdbCandidates(cfg, platformKey, type) {
   const platform = PLATFORMS[platformKey];
   const kind = type === "movie" ? "movie" : "tv";
-  const page = Math.floor(skip / PAGE_SIZE) + 1;
   const to = new Date();
   const from = new Date(Date.now() - cfg.days * 86400000);
-  const params = {
+  const base = {
     watch_region: REGION,
     with_watch_providers: String(platform.id),
     with_watch_monetization_types: "flatrate|free|ads",
-    page: String(page),
     sort_by: "popularity.desc",
     "vote_count.gte": "5",
   };
   if (kind === "movie") {
-    params.region = REGION;
-    params.with_release_type = "3|4|6";
-    params["release_date.gte"] = fmt(from);
-    params["release_date.lte"] = fmt(to);
+    base.region = REGION;
+    base.with_release_type = "3|4|6";
+    base["release_date.gte"] = fmt(from);
+    base["release_date.lte"] = fmt(to);
   } else {
-    params["first_air_date.gte"] = fmt(from);
-    params["first_air_date.lte"] = fmt(to);
+    base["first_air_date.gte"] = fmt(from);
+    base["first_air_date.lte"] = fmt(to);
   }
-  const data = await tmdb(cfg.key, `/discover/${kind}`, params);
-  const metas = await Promise.all(
-    data.results.filter((r) => r.poster_path && r.overview).map((r) => toMeta(cfg, type, kind, r.id))
+  const pages = await Promise.all(
+    [1, 2].map((p) => tmdb(cfg.key, `/discover/${kind}`, { ...base, page: String(p) }).catch(() => ({ results: [] })))
   );
-  return metas.filter(Boolean);
+  return pages
+    .flatMap((d) => d.results)
+    .filter((r) => r.poster_path && r.overview)
+    .map((r) => ({ tmdbId: String(r.id) }));
+}
+
+// Unisce le due fonti: prima i titoli presenti in entrambe, poi alterna "aggiunti" e "usciti"
+function mergeLists(added, released) {
+  const addedIds = new Set(added.map((x) => x.tmdbId));
+  const relIds = new Set(released.map((x) => x.tmdbId));
+  const both = added.filter((x) => relIds.has(x.tmdbId));
+  const onlyAdded = added.filter((x) => !relIds.has(x.tmdbId));
+  const onlyRel = released.filter((x) => !addedIds.has(x.tmdbId));
+  const out = [...both];
+  for (let i = 0; i < Math.max(onlyAdded.length, onlyRel.length); i++) {
+    if (onlyAdded[i]) out.push(onlyAdded[i]);
+    if (onlyRel[i]) out.push(onlyRel[i]);
+  }
+  return out;
 }
 
 async function getCatalog(cfg, platformKey, type, skip) {
-  const k = `cat-${platformKey}-${type}-${skip}-${cfg.days}`;
-  const hit = getC(k);
-  if (hit) return hit;
-  let metas;
-  try {
-    metas = await catalogFromJustWatch(cfg, platformKey, type, skip);
-    if (!metas.length && skip === 0) throw new Error("vuoto");
-  } catch (e) {
-    console.warn(`[${platformKey}/${type}] fallback TMDB (${e.message})`);
-    metas = await catalogFromTmdb(cfg, platformKey, type, skip);
+  const kind = type === "movie" ? "movie" : "tv";
+  const listKey = `list-${platformKey}-${type}-${cfg.days}`;
+  let list = getC(listKey);
+  if (!list) {
+    const [jw, tm] = await Promise.allSettled([
+      jwCandidates(cfg, platformKey, type),
+      tmdbCandidates(cfg, platformKey, type),
+    ]);
+    if (jw.status === "rejected") console.warn(`[${platformKey}/${type}] JustWatch: ${jw.reason.message}`);
+    if (tm.status === "rejected") console.warn(`[${platformKey}/${type}] TMDB: ${tm.reason.message}`);
+    list = mergeLists(jw.value || [], tm.value || []);
+    if (list.length) setC(listKey, list);
   }
-  setC(k, metas);
-  return metas;
+  const slice = list.slice(skip, skip + PAGE_SIZE);
+  const metas = await Promise.all(slice.map((it) => toMeta(cfg, type, kind, it.tmdbId, it.imdbId)));
+  return metas.filter(Boolean);
 }
 
 // ---------- Config / manifest ----------
@@ -215,7 +227,7 @@ function buildManifest(cfg) {
   }
   return {
     id: "community.novita.streaming.it",
-    version: "3.0.0",
+    version: "3.1.0",
     name: "Novità Streaming Italia",
     description: "Le ultime novità arrivate su Netflix, HBO Max, Prime Video e altre piattaforme in Italia.",
     resources: ["catalog"],
