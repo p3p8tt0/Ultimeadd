@@ -142,31 +142,48 @@ async function jwCandidates(cfg, platformKey, type) {
 async function tmdbCandidates(cfg, platformKey, type) {
   const platform = PLATFORMS[platformKey];
   const kind = type === "movie" ? "movie" : "tv";
-  const to = new Date();
-  const from = new Date(Date.now() - cfg.days * 86400000);
+  const to = fmt(new Date());
+  const from = fmt(new Date(Date.now() - cfg.days * 86400000));
   const base = {
     watch_region: REGION,
     with_watch_providers: String(platform.id),
     with_watch_monetization_types: "flatrate|free|ads",
     sort_by: "popularity.desc",
-    "vote_count.gte": "5",
   };
+  const queries = [];
   if (kind === "movie") {
-    base.region = REGION;
-    base.with_release_type = "3|4|6";
-    base["release_date.gte"] = fmt(from);
-    base["release_date.lte"] = fmt(to);
+    queries.push({
+      ...base,
+      region: REGION,
+      with_release_type: "3|4|6",
+      "release_date.gte": from,
+      "release_date.lte": to,
+      "vote_count.gte": "3",
+    });
   } else {
-    base["first_air_date.gte"] = fmt(from);
-    base["first_air_date.lte"] = fmt(to);
+    // 1) serie nuove (prima puntata nel periodo)
+    queries.push({ ...base, "first_air_date.gte": from, "first_air_date.lte": to });
+    // 2) nuove stagioni / puntate andate in onda nel periodo (es. reality e show)
+    queries.push({ ...base, "air_date.gte": from, "air_date.lte": to });
   }
-  const pages = await Promise.all(
-    [1, 2].map((p) => tmdb(cfg.key, `/discover/${kind}`, { ...base, page: String(p) }).catch(() => ({ results: [] })))
+  const results = await Promise.all(
+    queries.map((q) =>
+      Promise.all(
+        [1, 2, 3].map((p) =>
+          tmdb(cfg.key, `/discover/${kind}`, { ...q, page: String(p) }).catch(() => ({ results: [] }))
+        )
+      ).then((pages) => pages.flatMap((d) => d.results))
+    )
   );
-  return pages
-    .flatMap((d) => d.results)
-    .filter((r) => r.poster_path && r.overview)
-    .map((r) => ({ tmdbId: String(r.id) }));
+  // serie nuove prima, poi nuove stagioni; senza doppioni
+  const seen = new Set();
+  const out = [];
+  for (const r of results.flat()) {
+    if (!r.poster_path || seen.has(r.id)) continue;
+    seen.add(r.id);
+    out.push({ tmdbId: String(r.id) });
+  }
+  return out;
 }
 
 // Unisce le due fonti: prima i titoli presenti in entrambe, poi alterna "aggiunti" e "usciti"
@@ -227,7 +244,7 @@ function buildManifest(cfg) {
   }
   return {
     id: "community.novita.streaming.it",
-    version: "3.1.0",
+    version: "3.2.0",
     name: "Novità Streaming Italia",
     description: "Le ultime novità arrivate su Netflix, HBO Max, Prime Video e altre piattaforme in Italia.",
     resources: ["catalog"],
