@@ -280,6 +280,8 @@ async function buildCatalog(cfg, platformKey, type) {
   const seenIds = new Set();
   return metas
     .filter((m) => !seenIds.has(m.id) && seenIds.add(m.id))
+    // finestra rigida: solo titoli usciti negli ultimi N giorni (salvo includeAdded)
+    .filter((m) => cfg.includeAdded || m._recent)
     .sort(
       (a, b) =>
         Number(b._recent) - Number(a._recent) ||
@@ -290,7 +292,7 @@ async function buildCatalog(cfg, platformKey, type) {
 }
 
 async function getCatalog(cfg, platformKey, type, skip) {
-  const listKey = `sorted-${platformKey}-${type}-${cfg.days}`;
+  const listKey = `sorted-${platformKey}-${type}-${cfg.days}-${cfg.includeAdded}`;
   let all = getC(listKey);
   if (!all) {
     all = await buildCatalog(cfg, platformKey, type);
@@ -306,7 +308,7 @@ function parseConfig(raw) {
     if (!c.key || typeof c.key !== "string") return null;
     const days = Math.min(Math.max(parseInt(c.days, 10) || 30, 1), 90);
     const platforms = (Array.isArray(c.platforms) ? c.platforms : []).filter((p) => PLATFORMS[p]);
-    return { key: c.key, days, platforms: platforms.length ? platforms : Object.keys(PLATFORMS) };
+    return { key: c.key, days, includeAdded: c.includeAdded === true, platforms: platforms.length ? platforms : Object.keys(PLATFORMS) };
   } catch {
     return null;
   }
@@ -323,7 +325,7 @@ function buildManifest(cfg) {
   }
   return {
     id: "community.novita.streaming.it",
-    version: "3.5.0",
+    version: "3.6.0",
     name: "Novità Streaming Italia",
     description: "Le ultime novità arrivate su Netflix, HBO Max, Prime Video e altre piattaforme in Italia.",
     resources: ["catalog"],
