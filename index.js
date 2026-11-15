@@ -1,26 +1,27 @@
 const express = require("express");
 const cors = require("cors");
-const fs = require("fs");
 const path = require("path");
 
 const REGION = "IT";
+const LANG = "it";
 const PAGE_SIZE = 20;
 const IMG = "https://image.tmdb.org/t/p/w500";
+const TTL = 6 * 3600 * 1000;
 
-// Mappatura delle piattaforme e dei relativi codici provider per JustWatch Italia
+// id = provider TMDB (fallback) | jw = codice pacchetto JustWatch (verifica se una piattaforma non restituisce nulla)
 const PLATFORMS = {
-  netflix: { name: "Netflix", id: 8, jwProvider: "nfx" },
-  prime: { name: "Prime Video", id: 119, jwProvider: "amp" },
-  hbo: { name: "HBO Max", id: 1899, jwProvider: "hbo" },
-  disney: { name: "Disney+", id: 337, jwProvider: "dnp" },
-  apple: { name: "Apple TV+", id: 350, jwProvider: "atv" },
-  paramount: { name: "Paramount+", id: 531, jwProvider: "prt" },
-  discovery: { name: "Discovery+", id: 524, jwProvider: "dtv" },
-  now: { name: "NOW", id: 39, jwProvider: "now" },
-  raiplay: { name: "RaiPlay", id: 222, jwProvider: "rai" },
-  infinity: { name: "Mediaset Infinity", id: 359, jwProvider: "mds" },
-  timvision: { name: "TIMvision", id: 109, jwProvider: "tsi" },
-  crunchyroll: { name: "Crunchyroll", id: 283, jwProvider: "crn" },
+  netflix: { name: "Netflix", id: 8, jw: "nfx" },
+  prime: { name: "Prime Video", id: 119, jw: "amp" },
+  hbo: { name: "HBO Max", id: 1899, jw: "hbm" },
+  disney: { name: "Disney+", id: 337, jw: "dnp" },
+  apple: { name: "Apple TV+", id: 350, jw: "atp" },
+  paramount: { name: "Paramount+", id: 531, jw: "pmp" },
+  discovery: { name: "Discovery+", id: 524, jw: "dpe" },
+  now: { name: "NOW", id: 39, jw: "nw" },
+  raiplay: { name: "RaiPlay", id: 222, jw: "rai" },
+  infinity: { name: "Mediaset Infinity", id: 359, jw: "mfi" },
+  timvision: { name: "TIMvision", id: 109, jw: "tvi" },
+  crunchyroll: { name: "Crunchyroll", id: 283, jw: "cru" },
 };
 
 const app = express();
@@ -28,7 +29,14 @@ app.use(cors());
 app.use(express.json());
 
 const cache = new Map();
+const fmt = (d) => d.toISOString().slice(0, 10);
+const getC = (k) => {
+  const h = cache.get(k);
+  return h && Date.now() - h.t < TTL ? h.v : undefined;
+};
+const setC = (k, v) => cache.set(k, { t: Date.now(), v });
 
+// ---------- TMDB ----------
 async function tmdb(key, p, params = {}) {
   const qs = new URLSearchParams({ api_key: key, language: "it-IT", ...params });
   const res = await fetch(`https://api.themoviedb.org/3${p}?${qs}`);
@@ -36,62 +44,154 @@ async function tmdb(key, p, params = {}) {
   return res.json();
 }
 
-// Funzione per interrogare JustWatch Italia via GraphQL (senza bisogno di chiavi)
-async function fetchJustWatchCatalog(platformKey, type) {
-  const platform = PLATFORMS[platformKey];
-  if (!platform) return [];
-
-  const jwContentType = type === "movie" ? "MOVIE" : "SHOW";
-
-  const query = `
-    query GetPopularTitles($country: Country!, $provider: String!, $contentType: ContentType!) {
-      popularTitles(
-        country: $country
-        filter: {
-          packages: [$provider]
-          objectTypes: [$contentType]
-        }
-        sortBy: POPULARITY
-        first: 50
-      ) {
-        edges {
-          node {
-            content {
-              externalIds {
-                imdbId
-              }
-            }
-          }
-        }
-      }
-    }
-  `;
-
+// Dettagli + IMDb id in una sola chiamata
+async function tmdbDetails(cfg, kind, tmdbId) {
+  const k = `det-${kind}-${tmdbId}`;
+  const hit = getC(k);
+  if (hit !== undefined) return hit;
   try {
-    const response = await fetch("https://apis.justwatch.com/graphql", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        query,
-        variables: {
-          country: REGION,
-          provider: platform.jwProvider,
-          contentType: jwContentType
-        }
-      })
-    });
-
-    const json = await response.json();
-    const edges = json?.data?.popularTitles?.edges || [];
-    
-    // Restituisce la lista degli ID IMDb puliti (es. "tt1234567")
-    return edges.map(edge => edge?.node?.content?.externalIds?.imdbId).filter(Boolean);
-  } catch (err) {
-    console.error(`Errore JustWatch per ${platformKey}:`, err.message);
-    return [];
+    const d = await tmdb(cfg.key, `/${kind}/${tmdbId}`, { append_to_response: "external_ids" });
+    const v = {
+      imdb: d.external_ids?.imdb_id || null,
+      name: d.title || d.name,
+      poster: d.poster_path ? IMG + d.poster_path : null,
+      overview: d.overview || "",
+      year: (d.release_date || d.first_air_date || "").slice(0, 4),
+      rating: d.vote_average ? d.vote_average.toFixed(1) : undefined,
+    };
+    setC(k, v);
+    return v;
+  } catch {
+    return null;
   }
 }
 
+async function toMeta(cfg, type, kind, tmdbId, knownImdb) {
+  const d = await tmdbDetails(cfg, kind, tmdbId);
+  const id = d?.imdb || knownImdb;
+  if (!d || !id || !d.poster) return null;
+  return {
+    id,
+    type,
+    name: d.name,
+    poster: d.poster,
+    description: d.overview,
+    releaseInfo: d.year,
+    imdbRating: d.rating,
+  };
+}
+
+// ---------- JustWatch (endpoint non ufficiale) ----------
+const JW_QUERY = `
+query GetNewTitles($country: Country!, $date: Date!, $language: Language!, $filter: TitleFilter, $first: Int!, $after: String) {
+  newTitles(country: $country, date: $date, filter: $filter, first: $first, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    edges {
+      node {
+        id
+        objectType
+        content(country: $country, language: $language) {
+          title
+          externalIds { imdbId tmdbId }
+        }
+      }
+    }
+  }
+}`;
+
+async function jwNewTitles(platform, type, days, page) {
+  const k = `jw-${platform.jw}-${type}-${days}-${page}`;
+  const hit = getC(k);
+  if (hit) return hit;
+
+  const from = fmt(new Date(Date.now() - days * 86400000));
+  const objectType = type === "movie" ? "MOVIE" : "SHOW";
+  const res = await fetch("https://apis.justwatch.com/graphql", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "User-Agent": "Mozilla/5.0" },
+    body: JSON.stringify({
+      query: JW_QUERY,
+      variables: {
+        country: REGION,
+        language: LANG,
+        date: from,
+        first: PAGE_SIZE * 2,
+        filter: { packages: [platform.jw], objectTypes: [objectType] },
+      },
+    }),
+  });
+  if (!res.ok) throw new Error(`JustWatch ${res.status}`);
+  const json = await res.json();
+  if (json.errors) throw new Error(`JustWatch: ${json.errors[0]?.message}`);
+  const edges = json.data?.newTitles?.edges || [];
+  const items = edges
+    .map((e) => e.node?.content?.externalIds)
+    .filter((x) => x && (x.tmdbId || x.imdbId))
+    .map((x) => ({ tmdbId: x.tmdbId, imdbId: x.imdbId }));
+  setC(k, items);
+  return items;
+}
+
+async function catalogFromJustWatch(cfg, platformKey, type, skip) {
+  const platform = PLATFORMS[platformKey];
+  const kind = type === "movie" ? "movie" : "tv";
+  const all = await jwNewTitles(platform, type, cfg.days, 0);
+  if (!all.length) throw new Error("JustWatch: nessun risultato");
+  const slice = all.slice(skip, skip + PAGE_SIZE);
+  const metas = await Promise.all(
+    slice.map((it) => (it.tmdbId ? toMeta(cfg, type, kind, it.tmdbId, it.imdbId) : null))
+  );
+  return metas.filter(Boolean);
+}
+
+// ---------- Fallback TMDB (filtri migliorati) ----------
+async function catalogFromTmdb(cfg, platformKey, type, skip) {
+  const platform = PLATFORMS[platformKey];
+  const kind = type === "movie" ? "movie" : "tv";
+  const page = Math.floor(skip / PAGE_SIZE) + 1;
+  const to = new Date();
+  const from = new Date(Date.now() - cfg.days * 86400000);
+  const params = {
+    watch_region: REGION,
+    with_watch_providers: String(platform.id),
+    with_watch_monetization_types: "flatrate|free|ads",
+    page: String(page),
+    sort_by: "popularity.desc",
+    "vote_count.gte": "5",
+  };
+  if (kind === "movie") {
+    params.region = REGION;
+    params.with_release_type = "3|4|6";
+    params["release_date.gte"] = fmt(from);
+    params["release_date.lte"] = fmt(to);
+  } else {
+    params["first_air_date.gte"] = fmt(from);
+    params["first_air_date.lte"] = fmt(to);
+  }
+  const data = await tmdb(cfg.key, `/discover/${kind}`, params);
+  const metas = await Promise.all(
+    data.results.filter((r) => r.poster_path && r.overview).map((r) => toMeta(cfg, type, kind, r.id))
+  );
+  return metas.filter(Boolean);
+}
+
+async function getCatalog(cfg, platformKey, type, skip) {
+  const k = `cat-${platformKey}-${type}-${skip}-${cfg.days}`;
+  const hit = getC(k);
+  if (hit) return hit;
+  let metas;
+  try {
+    metas = await catalogFromJustWatch(cfg, platformKey, type, skip);
+    if (!metas.length && skip === 0) throw new Error("vuoto");
+  } catch (e) {
+    console.warn(`[${platformKey}/${type}] fallback TMDB (${e.message})`);
+    metas = await catalogFromTmdb(cfg, platformKey, type, skip);
+  }
+  setC(k, metas);
+  return metas;
+}
+
+// ---------- Config / manifest ----------
 function parseConfig(raw) {
   try {
     const c = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
@@ -109,15 +209,15 @@ function buildManifest(cfg) {
   if (cfg) {
     for (const key of cfg.platforms) {
       const p = PLATFORMS[key];
-      catalogs.push({ type: "movie", id: `novita-${key}-movie`, name: `${p.name} - Film (Italia)` });
-      catalogs.push({ type: "series", id: `novita-${key}-series`, name: `${p.name} - Serie (Italia)` });
+      catalogs.push({ type: "movie", id: `novita-${key}-movie`, name: `${p.name} - Film novità`, extra: [{ name: "skip" }] });
+      catalogs.push({ type: "series", id: `novita-${key}-series`, name: `${p.name} - Serie novità`, extra: [{ name: "skip" }] });
     }
   }
   return {
-    id: "community.novita.streaming.it.jw",
-    version: "2.1.0",
-    name: "Novità Streaming Italia (JustWatch)",
-    description: "Uscite reali in Italia verificate tramite JustWatch e arricchite con TMDB.",
+    id: "community.novita.streaming.it",
+    version: "3.0.0",
+    name: "Novità Streaming Italia",
+    description: "Le ultime novità arrivate su Netflix, HBO Max, Prime Video e altre piattaforme in Italia.",
     resources: ["catalog"],
     types: ["movie", "series"],
     idPrefixes: ["tt"],
@@ -126,68 +226,12 @@ function buildManifest(cfg) {
   };
 }
 
-// Trova i dettagli grafici/testuali su TMDB partendo dall'IMDb ID di JustWatch
-async function getTmdbMetaByImdb(cfg, imdbId, type) {
-  const kind = type === "movie" ? "movie" : "tv";
-  const cacheKey = `meta-${kind}-${imdbId}`;
-  if (cache.has(cacheKey)) return cache.get(cacheKey);
-
-  try {
-    const findData = await tmdb(cfg.key, `/find/${imdbId}`, { external_source: "imdb_id" });
-    const results = kind === "movie" ? findData.movie_results : findData.tv_results;
-    
-    if (!results || results.length === 0) return null;
-    const r = results[0];
-
-    if (!r.poster_path) return null;
-
-    const meta = {
-      id: imdbId,
-      type,
-      name: r.title || r.name,
-      poster: IMG + r.poster_path,
-      description: r.overview,
-      releaseInfo: (r.release_date || r.first_air_date || "").slice(0, 4),
-    };
-
-    cache.set(cacheKey, meta);
-    return meta;
-  } catch {
-    return null;
-  }
-}
-
-async function getCatalog(cfg, platformKey, type, skip) {
-  const cacheKey = `cat-jw-${platformKey}-${type}`;
-  let cachedData = cache.get(cacheKey);
-
-  // Cache dei risultati di JustWatch valida per 6 ore
-  if (!cachedData || Date.now() - cachedData.t > 6 * 3600 * 1000) {
-    const imdbIds = await fetchJustWatchCatalog(platformKey, type);
-    cachedData = { t: Date.now(), v: imdbIds };
-    cache.set(cacheKey, cachedData);
-  }
-
-  const imdbIds = cachedData.v;
-  const paginatedIds = imdbIds.slice(skip, skip + PAGE_SIZE);
-
-  // Arricchisce gli ID con le info di TMDB in parallelo
-  const metas = (
-    await Promise.all(
-      paginatedIds.map(imdbId => getTmdbMetaByImdb(cfg, imdbId, type))
-    )
-  ).filter(Boolean);
-
-  return metas;
-}
-
-// Pagina di configurazione
+// ---------- Routes ----------
 const sendConfigPage = (req, res) => res.sendFile(path.join(__dirname, "configure.html"));
 app.get("/", sendConfigPage);
 app.get("/configure", sendConfigPage);
 app.get("/:config/configure", sendConfigPage);
 
-// Verifica chiave TMDB
 app.post("/api/check", async (req, res) => {
   try {
     const key = String(req.body?.key || "").trim();
@@ -199,7 +243,6 @@ app.post("/api/check", async (req, res) => {
   }
 });
 
-// Manifest
 app.get("/manifest.json", (req, res) => res.json(buildManifest(null)));
 app.get("/:config/manifest.json", (req, res) => {
   const cfg = parseConfig(req.params.config);
@@ -207,7 +250,6 @@ app.get("/:config/manifest.json", (req, res) => {
   res.json(buildManifest(cfg));
 });
 
-// Cataloghi
 async function catalogHandler(req, res) {
   const cfg = parseConfig(req.params.config);
   const match = req.params.id.match(/^novita-(\w+)-(movie|series)$/);
@@ -226,4 +268,4 @@ app.get("/:config/catalog/:type/:id/:extra.json", catalogHandler);
 app.get("/:config/catalog/:type/:id.json", catalogHandler);
 
 const port = process.env.PORT || 7000;
-app.listen(port, () => console.log(`Addon JustWatch-powered attivo sulla porta ${port}`));
+app.listen(port, () => console.log(`Addon attivo sulla porta ${port}`));
