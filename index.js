@@ -56,6 +56,8 @@ async function tmdbDetails(cfg, kind, tmdbId) {
       name: d.title || d.name,
       poster: d.poster_path ? IMG + d.poster_path : null,
       overview: d.overview || "",
+      date: d.release_date || d.first_air_date || "",
+      pop: d.popularity || 0,
       year: (d.release_date || d.first_air_date || "").slice(0, 4),
       rating: d.vote_average ? d.vote_average.toFixed(1) : undefined,
     };
@@ -78,6 +80,8 @@ async function toMeta(cfg, type, kind, tmdbId, knownImdb) {
     description: d.overview,
     releaseInfo: d.year,
     imdbRating: d.rating,
+    _pop: d.pop,
+    _date: d.date,
   };
 }
 
@@ -186,38 +190,37 @@ async function tmdbCandidates(cfg, platformKey, type) {
   return out;
 }
 
-// Unisce le due fonti: prima i titoli presenti in entrambe, poi alterna "aggiunti" e "usciti"
+// Unisce le due fonti senza doppioni
 function mergeLists(added, released) {
-  const addedIds = new Set(added.map((x) => x.tmdbId));
-  const relIds = new Set(released.map((x) => x.tmdbId));
-  const both = added.filter((x) => relIds.has(x.tmdbId));
-  const onlyAdded = added.filter((x) => !relIds.has(x.tmdbId));
-  const onlyRel = released.filter((x) => !addedIds.has(x.tmdbId));
-  const out = [...both];
-  for (let i = 0; i < Math.max(onlyAdded.length, onlyRel.length); i++) {
-    if (onlyAdded[i]) out.push(onlyAdded[i]);
-    if (onlyRel[i]) out.push(onlyRel[i]);
-  }
-  return out;
+  const seen = new Set();
+  return [...added, ...released].filter((x) => !seen.has(x.tmdbId) && seen.add(x.tmdbId));
+}
+
+// Catalogo completo ordinato: prima i più popolari, a parità i più recenti
+async function buildCatalog(cfg, platformKey, type) {
+  const kind = type === "movie" ? "movie" : "tv";
+  const [jw, tm] = await Promise.allSettled([
+    jwCandidates(cfg, platformKey, type),
+    tmdbCandidates(cfg, platformKey, type),
+  ]);
+  if (jw.status === "rejected") console.warn(`[${platformKey}/${type}] JustWatch: ${jw.reason.message}`);
+  if (tm.status === "rejected") console.warn(`[${platformKey}/${type}] TMDB: ${tm.reason.message}`);
+  const list = mergeLists(jw.value || [], tm.value || []);
+  const metas = (await Promise.all(list.map((it) => toMeta(cfg, type, kind, it.tmdbId, it.imdbId)))).filter(Boolean);
+  const seenIds = new Set();
+  return metas
+    .filter((m) => !seenIds.has(m.id) && seenIds.add(m.id))
+    .sort((a, b) => b._pop - a._pop || (b._date || "").localeCompare(a._date || ""));
 }
 
 async function getCatalog(cfg, platformKey, type, skip) {
-  const kind = type === "movie" ? "movie" : "tv";
-  const listKey = `list-${platformKey}-${type}-${cfg.days}`;
-  let list = getC(listKey);
-  if (!list) {
-    const [jw, tm] = await Promise.allSettled([
-      jwCandidates(cfg, platformKey, type),
-      tmdbCandidates(cfg, platformKey, type),
-    ]);
-    if (jw.status === "rejected") console.warn(`[${platformKey}/${type}] JustWatch: ${jw.reason.message}`);
-    if (tm.status === "rejected") console.warn(`[${platformKey}/${type}] TMDB: ${tm.reason.message}`);
-    list = mergeLists(jw.value || [], tm.value || []);
-    if (list.length) setC(listKey, list);
+  const listKey = `sorted-${platformKey}-${type}-${cfg.days}`;
+  let all = getC(listKey);
+  if (!all) {
+    all = await buildCatalog(cfg, platformKey, type);
+    if (all.length) setC(listKey, all);
   }
-  const slice = list.slice(skip, skip + PAGE_SIZE);
-  const metas = await Promise.all(slice.map((it) => toMeta(cfg, type, kind, it.tmdbId, it.imdbId)));
-  return metas.filter(Boolean);
+  return all.slice(skip, skip + PAGE_SIZE).map(({ _pop, _date, ...meta }) => meta);
 }
 
 // ---------- Config / manifest ----------
@@ -244,7 +247,7 @@ function buildManifest(cfg) {
   }
   return {
     id: "community.novita.streaming.it",
-    version: "3.2.0",
+    version: "3.3.0",
     name: "Novità Streaming Italia",
     description: "Le ultime novità arrivate su Netflix, HBO Max, Prime Video e altre piattaforme in Italia.",
     resources: ["catalog"],
