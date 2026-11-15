@@ -293,8 +293,8 @@ async function buildCatalog(cfg, platformKey, type) {
     .filter((m) => !seenIds.has(m.id) && seenIds.add(m.id))
     // disponibile davvero in Italia su QUESTA piattaforma (dati TMDB/JustWatch per l'Italia)
     .filter((m) => (m._providers || []).includes(PLATFORMS[platformKey].id))
-    // titoli stranieri (né italiani né inglesi) solo se localizzati in italiano (trama in italiano su TMDB)
-    .filter((m) => ["it", "en"].includes(m._lang) || m._hasIt)
+    // titoli stranieri (né italiani né inglesi) solo se localizzati in italiano (trama in italiano su TMDB) o presenti nella classifica italiana
+    .filter((m) => ["it", "en"].includes(m._lang) || m._hasIt || m._rank !== Infinity)
     // finestra rigida: solo titoli usciti negli ultimi N giorni (salvo includeAdded)
     .filter((m) => cfg.includeAdded || m._recent)
     // solo produzioni italiane (disattivabile con onlyItalian:false)
@@ -342,7 +342,7 @@ function buildManifest(cfg) {
   }
   return {
     id: "community.novita.streaming.it",
-    version: "3.9.0",
+    version: "3.10.0",
     name: "Novità Streaming Italia",
     description: "Le ultime novità arrivate su Netflix, HBO Max, Prime Video e altre piattaforme in Italia.",
     resources: ["catalog"],
