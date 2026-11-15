@@ -58,6 +58,7 @@ async function tmdbDetails(cfg, kind, tmdbId) {
       overview: d.overview || "",
       date: d.release_date || d.first_air_date || "",
       pop: d.popularity || 0,
+      lang: d.original_language || "",
       providers: (() => {
         const it = d["watch/providers"]?.results?.[REGION] || {};
         return [...(it.flatrate || []), ...(it.free || []), ...(it.ads || [])].map((p) => p.provider_id);
@@ -91,6 +92,8 @@ async function toMeta(cfg, type, kind, tmdbId, knownImdb) {
     _seasons: d.seasons,
     _countries: d.countries,
     _providers: d.providers,
+    _lang: d.lang,
+    _hasIt: !!(d.overview || "").trim(),
   };
 }
 
@@ -290,6 +293,8 @@ async function buildCatalog(cfg, platformKey, type) {
     .filter((m) => !seenIds.has(m.id) && seenIds.add(m.id))
     // disponibile davvero in Italia su QUESTA piattaforma (dati TMDB/JustWatch per l'Italia)
     .filter((m) => (m._providers || []).includes(PLATFORMS[platformKey].id))
+    // titoli stranieri (né italiani né inglesi) solo se localizzati in italiano (trama in italiano su TMDB)
+    .filter((m) => ["it", "en"].includes(m._lang) || m._hasIt)
     // finestra rigida: solo titoli usciti negli ultimi N giorni (salvo includeAdded)
     .filter((m) => cfg.includeAdded || m._recent)
     // solo produzioni italiane (disattivabile con onlyItalian:false)
@@ -310,7 +315,7 @@ async function getCatalog(cfg, platformKey, type, skip) {
     all = await buildCatalog(cfg, platformKey, type);
     if (all.length) setC(listKey, all);
   }
-  return all.slice(skip, skip + PAGE_SIZE).map(({ _pop, _date, _seasons, _recent, _rank, _countries, _providers, ...meta }) => meta);
+  return all.slice(skip, skip + PAGE_SIZE).map(({ _pop, _date, _seasons, _recent, _rank, _countries, _providers, _lang, _hasIt, ...meta }) => meta);
 }
 
 // ---------- Config / manifest ----------
@@ -337,7 +342,7 @@ function buildManifest(cfg) {
   }
   return {
     id: "community.novita.streaming.it",
-    version: "3.8.0",
+    version: "3.9.0",
     name: "Novità Streaming Italia",
     description: "Le ultime novità arrivate su Netflix, HBO Max, Prime Video e altre piattaforme in Italia.",
     resources: ["catalog"],
